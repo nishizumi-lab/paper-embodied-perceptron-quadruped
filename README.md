@@ -2,7 +2,7 @@
 
 **Co-design of Virtual Biarticular Musculoskeletal Layer and Minimal Neural Circuit Based on Embodied Perceptron for Quadruped Locomotion**
 
-[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.placeholder.svg)](https://zenodo.org/)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.23533255.svg)](https://doi.org/10.5281/zenodo.23533255)
 [![License: MIT](https://img.shields.io/badge/Code_License-MIT-blue.svg)](LICENSE)
 [![License: CC BY 4.0](https://img.shields.io/badge/Paper_License-CC_BY_4.0-lightgrey.svg)](LICENSE)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10+-blue.svg)](https://www.python.org/)
@@ -140,9 +140,10 @@ python capture_screenshots.py
 @article{nishizumi2026embodied,
   title={身体化パーセプトロン表現に基づく仮想多関節筋骨格レイヤーと極小神経回路の共設計による四脚歩行制御},
   author={Nishizumi},
-  journal={GitHub Repository and Zenodo Archive},
+  journal={Zenodo},
   year={2026},
-  url={https://github.com/nishizumi-lab/paper-embodied-perceptron-quadruped}
+  doi={10.5281/zenodo.23533255},
+  url={https://doi.org/10.5281/zenodo.23533255}
 }
 ```
 

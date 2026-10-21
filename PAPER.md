@@ -4,6 +4,7 @@
 
 西住 (Nishizumi) / Nishizumi Lab  
 公開日: 2026年10月  
+DOI: [10.5281/zenodo.23533255](https://doi.org/10.5281/zenodo.23533255)  
 リポジトリ: [https://github.com/nishizumi-lab/paper-embodied-perceptron-quadruped](https://github.com/nishizumi-lab/paper-embodied-perceptron-quadruped)
 
 ---

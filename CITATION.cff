@@ -6,6 +6,7 @@ authors:
     affiliation: "Nishizumi Lab"
 date-released: "2026-10-21"
 version: "1.0.0"
+doi: "10.5281/zenodo.23533255"
 repository-code: "https://github.com/nishizumi-lab/paper-embodied-perceptron-quadruped"
 license: "CC-BY-4.0"
 keywords:
