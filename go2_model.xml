@@ -1,0 +1,102 @@
+<mujoco model="go2">
+  <compiler angle="radian" coordinate="local" inertiafromgeom="auto"/>
+  <option timestep="0.002" integrator="Euler" iterations="12" solver="Newton">
+    <flag contact="enable"/>
+  </option>
+  <visual>
+    <global offwidth="1920" offheight="1080"/>
+  </visual>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.35 0.6 0.85" rgb2="0.75 0.88 0.98" width="512" height="512"/>
+    <texture name="groundplane" type="2d" builtin="checker" rgb1="0.22 0.35 0.24" rgb2="0.27 0.42 0.29" width="512" height="512" mark="edge" markrgb="0.6 0.75 0.6"/>
+    <material name="groundplane" texture="groundplane" texuniform="true" texrepeat="5 5" reflectance="0.08"/>
+  </asset>
+  <default>
+    <geom friction="1.2 0.02 0.01" solimp="0.9 0.95 0.001 0.5 2" solref="0.02 1"/>
+    <joint damping="0.5" armature="0.01" frictionloss="0.1"/>
+  </default>
+  <worldbody>
+    <light directional="true" diffuse=".9 .9 .9" specular=".2 .2 .2" pos="0 0 5" dir="0 0 -1"/>
+    <geom name="floor" type="plane" pos="0 0 0" size="100 100 0.1" material="groundplane"/>
+    
+    <body name="trunk" pos="0 0 0.32">
+      <freejoint name="root"/>
+      <geom name="trunk_geom" type="box" size="0.188 0.047 0.057" mass="6.9" rgba="0.88 0.88 0.90 1"/>
+      
+      <!-- FL leg (Front Left) -->
+      <body name="FL_hip" pos="0.193 0.047 0">
+        <geom name="FL_hip_geom" type="cylinder" size="0.046 0.02" quat="0.707 0.707 0 0" mass="0.68" rgba="0.3 0.3 0.35 1"/>
+        <joint name="FL_hip_joint" type="hinge" pos="0 0 0" axis="1 0 0" range="-1.05 1.05"/>
+        <body name="FL_thigh" pos="0 0.095 0">
+          <geom name="FL_thigh_geom" type="capsule" fromto="0 0 0 0 0 -0.213" size="0.025" mass="1.15" rgba="0.75 0.75 0.78 1"/>
+          <joint name="FL_thigh_joint" type="hinge" pos="0 0 0" axis="0 1 0" range="-1.57 3.49"/>
+          <body name="FL_calf" pos="0 0 -0.213">
+            <geom name="FL_calf_geom" type="capsule" fromto="0 0 0 0 0 -0.213" size="0.018" mass="0.24" rgba="0.25 0.25 0.28 1"/>
+            <joint name="FL_calf_joint" type="hinge" pos="0 0 0" axis="0 1 0" range="-2.72 -0.84"/>
+            <geom name="FL_foot" type="sphere" pos="0 0 -0.213" size="0.025" mass="0.06" rgba="0.9 0.2 0.2 1"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- FR leg (Front Right) -->
+      <body name="FR_hip" pos="0.193 -0.047 0">
+        <geom name="FR_hip_geom" type="cylinder" size="0.046 0.02" quat="0.707 0.707 0 0" mass="0.68" rgba="0.3 0.3 0.35 1"/>
+        <joint name="FR_hip_joint" type="hinge" pos="0 0 0" axis="1 0 0" range="-1.05 1.05"/>
+        <body name="FR_thigh" pos="0 -0.095 0">
+          <geom name="FR_thigh_geom" type="capsule" fromto="0 0 0 0 0 -0.213" size="0.025" mass="1.15" rgba="0.75 0.75 0.78 1"/>
+          <joint name="FR_thigh_joint" type="hinge" pos="0 0 0" axis="0 1 0" range="-1.57 3.49"/>
+          <body name="FR_calf" pos="0 0 -0.213">
+            <geom name="FR_calf_geom" type="capsule" fromto="0 0 0 0 0 -0.213" size="0.018" mass="0.24" rgba="0.25 0.25 0.28 1"/>
+            <joint name="FR_calf_joint" type="hinge" pos="0 0 0" axis="0 1 0" range="-2.72 -0.84"/>
+            <geom name="FR_foot" type="sphere" pos="0 0 -0.213" size="0.025" mass="0.06" rgba="0.9 0.2 0.2 1"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- RL leg (Rear Left) -->
+      <body name="RL_hip" pos="-0.193 0.047 0">
+        <geom name="RL_hip_geom" type="cylinder" size="0.046 0.02" quat="0.707 0.707 0 0" mass="0.68" rgba="0.3 0.3 0.35 1"/>
+        <joint name="RL_hip_joint" type="hinge" pos="0 0 0" axis="1 0 0" range="-1.05 1.05"/>
+        <body name="RL_thigh" pos="0 0.095 0">
+          <geom name="RL_thigh_geom" type="capsule" fromto="0 0 0 0 0 -0.213" size="0.025" mass="1.15" rgba="0.75 0.75 0.78 1"/>
+          <joint name="RL_thigh_joint" type="hinge" pos="0 0 0" axis="0 1 0" range="-0.52 4.54"/>
+          <body name="RL_calf" pos="0 0 -0.213">
+            <geom name="RL_calf_geom" type="capsule" fromto="0 0 0 0 0 -0.213" size="0.018" mass="0.24" rgba="0.25 0.25 0.28 1"/>
+            <joint name="RL_calf_joint" type="hinge" pos="0 0 0" axis="0 1 0" range="-2.72 -0.84"/>
+            <geom name="RL_foot" type="sphere" pos="0 0 -0.213" size="0.025" mass="0.06" rgba="0.9 0.2 0.2 1"/>
+          </body>
+        </body>
+      </body>
+
+      <!-- RR leg (Rear Right) -->
+      <body name="RR_hip" pos="-0.193 -0.047 0">
+        <geom name="RR_hip_geom" type="cylinder" size="0.046 0.02" quat="0.707 0.707 0 0" mass="0.68" rgba="0.3 0.3 0.35 1"/>
+        <joint name="RR_hip_joint" type="hinge" pos="0 0 0" axis="1 0 0" range="-1.05 1.05"/>
+        <body name="RR_thigh" pos="0 -0.095 0">
+          <geom name="RR_thigh_geom" type="capsule" fromto="0 0 0 0 0 -0.213" size="0.025" mass="1.15" rgba="0.75 0.75 0.78 1"/>
+          <joint name="RR_thigh_joint" type="hinge" pos="0 0 0" axis="0 1 0" range="-0.52 4.54"/>
+          <body name="RR_calf" pos="0 0 -0.213">
+            <geom name="RR_calf_geom" type="capsule" fromto="0 0 0 0 0 -0.213" size="0.018" mass="0.24" rgba="0.25 0.25 0.28 1"/>
+            <joint name="RR_calf_joint" type="hinge" pos="0 0 0" axis="0 1 0" range="-2.72 -0.84"/>
+            <geom name="RR_foot" type="sphere" pos="0 0 -0.213" size="0.025" mass="0.06" rgba="0.9 0.2 0.2 1"/>
+          </body>
+        </body>
+      </body>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <motor name="FL_hip" joint="FL_hip_joint" ctrlrange="-24 24"/>
+    <motor name="FL_thigh" joint="FL_thigh_joint" ctrlrange="-24 24"/>
+    <motor name="FL_calf" joint="FL_calf_joint" ctrlrange="-45 45"/>
+    <motor name="FR_hip" joint="FR_hip_joint" ctrlrange="-24 24"/>
+    <motor name="FR_thigh" joint="FR_thigh_joint" ctrlrange="-24 24"/>
+    <motor name="FR_calf" joint="FR_calf_joint" ctrlrange="-45 45"/>
+    <motor name="RL_hip" joint="RL_hip_joint" ctrlrange="-24 24"/>
+    <motor name="RL_thigh" joint="RL_thigh_joint" ctrlrange="-24 24"/>
+    <motor name="RL_calf" joint="RL_calf_joint" ctrlrange="-45 45"/>
+    <motor name="RR_hip" joint="RR_hip_joint" ctrlrange="-24 24"/>
+    <motor name="RR_thigh" joint="RR_thigh_joint" ctrlrange="-24 24"/>
+    <motor name="RR_calf" joint="RR_calf_joint" ctrlrange="-45 45"/>
+  </actuator>
+</mujoco>

@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use this work or codebase, please cite it using the following metadata."
+title: "身体化パーセプトロン表現に基づく仮想多関節筋骨格レイヤーと極小神経回路の共設計による四脚歩行制御"
+authors:
+  - family-names: "Nishizumi"
+    affiliation: "Nishizumi Lab"
+date-released: "2026-10-21"
+version: "1.0.0"
+repository-code: "https://github.com/nishizumi-lab/paper-embodied-perceptron-quadruped"
+license: "CC-BY-4.0"
+keywords:
+  - "quadruped locomotion"
+  - "embodied perceptron"
+  - "musculoskeletal model"
+  - "bi-articular muscle"
+  - "reinforcement learning"
+  - "mujoco"
