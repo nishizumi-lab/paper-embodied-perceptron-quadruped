@@ -9,6 +9,12 @@ def relu(x):
 class ProposedVM:
     """
     Proposed Embodied Perceptron Virtual Musculoskeletal Layer + Minimal Neural Controller.
+    Strictly non-negative muscle tension formulation:
+      strain = R @ q + b
+      strain_rate = R @ dq
+      f_active = F_max * sigmoid(W_neural @ x_osc + W_fb @ s_imu)
+      tension = relu(K * strain + D * strain_rate + f_active)  # >= 0 always!
+      tau = - R.T @ tension
     Total parameters = 32*12 (R) + 32 (b) + 32 (K) + 32 (D) + 32*4 (W_neural) + 32*6 (W_fb) = 800.
     """
     def __init__(self, seed=42):
@@ -16,66 +22,90 @@ class ProposedVM:
         self.n = 12  # 12 joints
         
         # 1. Moment arm matrix R (32 x 12)
+        # Sign convention for tau = - R.T @ f (f >= 0 tension):
+        # Desired tau > 0 -> -R.T > 0 -> R = -1
+        # Desired tau < 0 -> -R.T < 0 -> R = +1
         R_init = np.zeros((self.m, self.n))
         for leg in range(4):
             m_s = leg * 8
             j_s = leg * 3
-            # Muscle 0: Hip Abductor (+)
-            R_init[m_s + 0, j_s + 0] = 1.0
-            # Muscle 1: Hip Adductor (-)
-            R_init[m_s + 1, j_s + 0] = -1.0
-            # Muscle 2: Hip Flexor (swing forward, thigh < 0)
-            R_init[m_s + 2, j_s + 1] = -1.0
-            # Muscle 3: Hip Extensor (push backward, thigh > 0)
-            R_init[m_s + 3, j_s + 1] = 1.0
-            # Muscle 4: Knee Flexor (knee flexion, calf < 0)
+            # Muscle 0: Hip Abductor (tau > 0 -> R = -1.0)
+            R_init[m_s + 0, j_s + 0] = -1.0
+            # Muscle 1: Hip Adductor (tau < 0 -> R = 1.0)
+            R_init[m_s + 1, j_s + 0] = 1.0
+            # Muscle 2: Hip Flexor (swing forward, tau < 0 -> R = 1.0)
+            R_init[m_s + 2, j_s + 1] = 1.0
+            # Muscle 3: Hip Extensor (push backward, tau > 0 -> R = -1.0)
+            R_init[m_s + 3, j_s + 1] = -1.0
+            # Muscle 4: Knee Flexor (knee flexion / lift, tau > 0 -> R = -1.0)
             R_init[m_s + 4, j_s + 2] = -1.0
-            # Muscle 5: Knee Extensor (knee extension, calf > 0)
+            # Muscle 5: Knee Extensor (knee extension, tau < 0 -> R = 1.0)
             R_init[m_s + 5, j_s + 2] = 1.0
-            # Muscle 6: Bi-articular Rectus Femoris-like (Hip flex - / Knee ext +)
-            R_init[m_s + 6, j_s + 1] = -0.7
+            # Muscle 6: Bi-articular Rectus Femoris-like (Hip flex tau < 0 / Knee ext tau < 0)
+            R_init[m_s + 6, j_s + 1] = 0.7
             R_init[m_s + 6, j_s + 2] = 0.7
-            # Muscle 7: Bi-articular Hamstring-like (Hip ext + / Knee flex -)
-            R_init[m_s + 7, j_s + 1] = 0.7
+            # Muscle 7: Bi-articular Hamstring-like (Hip ext tau > 0 / Knee flex tau > 0)
+            R_init[m_s + 7, j_s + 1] = -0.7
             R_init[m_s + 7, j_s + 2] = -0.7
             
         self.R = R_init.copy()
         
         # 2. Pretension bias b (32)
-        self.b = np.full(self.m, 0.05)
+        self.b = np.zeros(self.m)
         
         # 3. Log-stiffness p_K and Log-damping p_D (32 each)
-        # K ~ 45 N/rad, D ~ 2.0 Ns/rad
-        self.p_K = np.full(self.m, np.log(45.0))
-        self.p_D = np.full(self.m, np.log(2.0))
+        # K ~ 28 N/rad, D ~ 1.8 Ns/rad
+        self.p_K = np.full(self.m, np.log(28.0))
+        self.p_D = np.full(self.m, np.log(1.8))
         
         # 4. Neural controller weights
         np.random.seed(seed)
         self.W_neural = np.random.randn(self.m, 4) * 0.05
         self.W_fb = np.random.randn(self.m, 6) * 0.02
         
-        # Prior trot pattern initialization for diagonal coupling
+        # Trot pattern initialization for diagonal coupling with reciprocal inhibition
         # Diagonal pair 1: FL (leg 0), RR (leg 3)
         # Diagonal pair 2: FR (leg 1), RL (leg 2)
+        w_sw = 2.4
+        w_st = 2.4
         for leg in [0, 3]:
             m_s = leg * 8
-            self.W_neural[m_s + 2, 0] = 1.2   # hip flexor with sin(psi)
-            self.W_neural[m_s + 3, 1] = 1.2   # hip extensor with cos(psi)
-            self.W_neural[m_s + 4, 0] = 0.8   # knee flexor with sin(psi)
-            self.W_neural[m_s + 5, 1] = 1.0   # knee extensor with cos(psi)
-            self.W_neural[m_s + 6, 0] = 0.6   # bi-articular flex-ext
-            self.W_neural[m_s + 7, 1] = 0.6   # bi-articular ext-flex
+            # Swing on sin(psi): Hip flex, Knee ext, Bi-RF
+            self.W_neural[m_s + 2, 0] = w_sw
+            self.W_neural[m_s + 5, 0] = w_sw * 0.7
+            self.W_neural[m_s + 6, 0] = w_sw * 1.0
+            self.W_neural[m_s + 3, 0] = -w_sw * 0.8
+            self.W_neural[m_s + 4, 0] = -w_sw * 0.8
+            # Stance on cos(psi): Hip ext, Knee flex, Bi-Ham
+            self.W_neural[m_s + 3, 1] = w_st
+            self.W_neural[m_s + 4, 1] = w_st * 0.7
+            self.W_neural[m_s + 7, 1] = w_st * 1.0
+            self.W_neural[m_s + 2, 1] = -w_st * 0.8
+            self.W_neural[m_s + 5, 1] = -w_st * 0.8
             
         for leg in [1, 2]:
             m_s = leg * 8
-            self.W_neural[m_s + 2, 2] = 1.2   # hip flexor with sin(psi+pi)
-            self.W_neural[m_s + 3, 3] = 1.2   # hip extensor with cos(psi+pi)
-            self.W_neural[m_s + 4, 2] = 0.8   # knee flexor with sin(psi+pi)
-            self.W_neural[m_s + 5, 3] = 1.0   # knee extensor with cos(psi+pi)
-            self.W_neural[m_s + 6, 2] = 0.6
-            self.W_neural[m_s + 7, 3] = 0.6
+            self.W_neural[m_s + 2, 2] = w_sw
+            self.W_neural[m_s + 5, 2] = w_sw * 0.7
+            self.W_neural[m_s + 6, 2] = w_sw * 1.0
+            self.W_neural[m_s + 3, 2] = -w_sw * 0.8
+            self.W_neural[m_s + 4, 2] = -w_sw * 0.8
             
-        self.F_max = 35.0  # Maximum muscle active force [N]
+            self.W_neural[m_s + 3, 3] = w_st
+            self.W_neural[m_s + 4, 3] = w_st * 0.7
+            self.W_neural[m_s + 7, 3] = w_st * 1.0
+            self.W_neural[m_s + 2, 3] = -w_st * 0.8
+            self.W_neural[m_s + 5, 3] = -w_st * 0.8
+            
+        # Posture feedback
+        for leg in range(4):
+            m_s = leg * 8
+            is_left = (leg in [0, 2])
+            sign = 1.0 if is_left else -1.0
+            self.W_fb[m_s + 0, 0] = -0.3 * sign  # Hip Abd on roll
+            self.W_fb[m_s + 1, 0] = 0.3 * sign   # Hip Add on roll
+            
+        self.F_max = 24.0  # Maximum muscle active force [N]
 
     def get_params(self):
         return np.concatenate([
@@ -120,34 +150,51 @@ class ProposedVM:
         f_active = self.F_max * sigmoid(logits)
         
         # Lower virtual musculoskeletal layer:
-        # tau = -R^T * phi( K(R q + b) + D R dq ) + R^T * f_active
+        # Strictly non-negative tendon tension
         K = np.exp(np.clip(self.p_K, 1.5, 5.5))
         D = np.exp(np.clip(self.p_D, -1.0, 2.5))
         
         muscle_strain = self.R @ q + self.b
         muscle_strain_rate = self.R @ dq
         
-        passive_force = relu(K * muscle_strain + D * muscle_strain_rate)
-        total_muscle_force = passive_force - f_active
-        
-        tau = - self.R.T @ total_muscle_force
+        total_muscle_tension = relu(K * muscle_strain + D * muscle_strain_rate + f_active)
+        tau = - self.R.T @ total_muscle_tension
         return tau
 
 
 class MinimalPD:
     """
-    Ablation: Minimal Neural Controller + Independent Linear PD (R = I fixed).
-    Parameters: W_neural (12x4=48) + W_fb (12x6=72) + b (12) + Kp (12) + Kd (12) = 156 params (~150).
+    Ablation Baseline: Minimal Neural Controller + Independent Linear PD (R = I fixed).
+    Fair comparison: receives same trot oscillator input and comparable initial trot bias.
+    Parameters: W_neural (12x4=48) + W_fb (12x6=72) + b (12) + Kp (12) + Kd (12) = 156 params.
     """
     def __init__(self, seed=42):
         self.n = 12
         np.random.seed(seed)
-        self.W_neural = np.random.randn(self.n, 4) * 0.1
-        self.W_fb = np.random.randn(self.n, 6) * 0.05
+        self.W_neural = np.random.randn(self.n, 4) * 0.05
+        self.W_fb = np.random.randn(self.n, 6) * 0.02
         self.b = np.zeros(self.n)
-        self.Kp = np.full(self.n, 45.0)
-        self.Kd = np.full(self.n, 2.0)
-        self.A_max = 0.4  # Max joint angle displacement (rad)
+        self.Kp = np.full(self.n, 35.0)
+        self.Kd = np.full(self.n, 1.8)
+        self.A_max = 0.35  # Max joint angle displacement (rad)
+        
+        # Fair initial trot bias matching proposed controller:
+        # Leg 0 (FL) & Leg 3 (RR): swing on sin(psi), stance on cos(psi)
+        # Hip FE (joint 1): flex (<0) on sin, ext (>0) on cos
+        # Knee FE (joint 2): ext (<0) on sin, flex (>0) on cos
+        for leg in [0, 3]:
+            j_s = leg * 3
+            self.W_neural[j_s + 1, 0] = -1.2  # Hip flex
+            self.W_neural[j_s + 1, 1] = 1.2   # Hip ext
+            self.W_neural[j_s + 2, 0] = -1.0  # Knee ext
+            self.W_neural[j_s + 2, 1] = 1.0   # Knee flex
+            
+        for leg in [1, 2]:
+            j_s = leg * 3
+            self.W_neural[j_s + 1, 2] = -1.2
+            self.W_neural[j_s + 1, 3] = 1.2
+            self.W_neural[j_s + 2, 2] = -1.0
+            self.W_neural[j_s + 2, 3] = 1.0
 
     def get_params(self):
         return np.concatenate([
@@ -189,12 +236,13 @@ class MinimalPD:
 
 class BaselineMLP:
     """
-    Conventional Baseline: 3-layer MLP (Input 34 -> 128 -> 128 -> 12) + Independent PD.
-    Total parameters ~ 22,540 (~20k).
+    Conventional Baseline: 3-layer MLP (Input 34 -> 64 -> 64 -> 12) + Independent PD.
+    Input: x_osc (4) + s_imu (6) + q (12) + dq (12) = 34 dimensions.
+    Total parameters = 7,180.
     """
     def __init__(self, seed=42):
-        self.dim_in = 34  # x_osc (4) + s_imu (6) + q (12) + dq (12)
-        self.dim_h = 128
+        self.dim_in = 34
+        self.dim_h = 64
         self.dim_out = 12
         
         np.random.seed(seed)
@@ -205,9 +253,9 @@ class BaselineMLP:
         self.W3 = np.random.randn(self.dim_out, self.dim_h) * np.sqrt(2.0 / self.dim_h) * 0.1
         self.b3 = np.zeros(self.dim_out)
         
-        self.Kp = 45.0
-        self.Kd = 2.0
-        self.A_max = 0.4
+        self.Kp = 35.0
+        self.Kd = 1.8
+        self.A_max = 0.35
 
     def get_params(self):
         return np.concatenate([

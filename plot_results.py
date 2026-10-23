@@ -33,8 +33,8 @@ def generate_plots():
     rew_b = exp1["baseline_mlp"]["history"]["mean_reward"]
     
     plt.plot(steps_p, rew_p, label="Proposed-VM (800 params)", color="#1f77b4", linewidth=2.5)
-    plt.plot(steps_b, rew_b, label="Baseline-MLP (20k params)", color="#ff7f0e", linewidth=2.0, linestyle="--")
-    plt.plot(steps_m, rew_m, label="Minimal-PD (156 params)", color="#7f7f7f", linewidth=1.8, linestyle=":")
+    plt.plot(steps_m, rew_m, label="Minimal-PD (156 params)", color="#2ca02c", linewidth=2.0, linestyle="-.")
+    plt.plot(steps_b, rew_b, label="Baseline-MLP (7.2k params)", color="#ff7f0e", linewidth=1.8, linestyle="--")
     
     plt.xlabel("Environment Steps", fontsize=12)
     plt.ylabel("Mean Episode Reward", fontsize=12)
@@ -79,7 +79,10 @@ def generate_plots():
     sr_b_f = [item["success_rate"] * 100 for item in exp3["baseline_mlp"]]
     
     plt.plot(freqs, sr_p_f, "o-", label="Proposed-VM (f_active downsampled)", color="#1f77b4", linewidth=2.5)
-    plt.plot(freqs, sr_b_f, "s--", label="Baseline-MLP (target angle downsampled)", color="#ff7f0e", linewidth=2.0)
+    if "minimal_pd" in exp3:
+        sr_m_f = [item["success_rate"] * 100 for item in exp3["minimal_pd"]]
+        plt.plot(freqs, sr_m_f, "^-.", label="Minimal-PD (target downsampled)", color="#2ca02c", linewidth=2.0)
+    plt.plot(freqs, sr_b_f, "s--", label="Baseline-MLP (target angle downsampled)", color="#ff7f0e", linewidth=1.8)
     
     plt.xlabel("Upper Controller Update Frequency [Hz]", fontsize=12)
     plt.ylabel("Gait Continuation Success Rate [%]", fontsize=12)

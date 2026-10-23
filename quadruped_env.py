@@ -91,8 +91,10 @@ class QuadrupedEnv:
         self.perturb_steps_left = int(duration_sec / self.dt_sim)
 
     def step(self, tau):
-        # Clip torque limits (-45 to 45 N*m)
-        tau = np.clip(tau, -45.0, 45.0)
+        # Joint torque limits matching MuJoCo model XML:
+        # Hip AA: [-24, 24], Hip FE (Thigh): [-24, 24], Knee FE (Calf): [-45, 45] per leg
+        tau_limit = np.array([24.0, 24.0, 45.0] * 4, dtype=np.float64)
+        tau = np.clip(tau, -tau_limit, tau_limit)
         
         for _ in range(self.decimation):
             if self.perturb_steps_left > 0:
