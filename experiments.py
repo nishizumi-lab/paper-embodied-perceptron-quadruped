@@ -5,9 +5,9 @@
 
 実行実験一覧:
     実験1: 学習曲線とサンプル効率の比較（Proposed-VM, Minimal-PD, Baseline-MLP）
-    実験2: 横方向撃力インパルス外乱耐性試験（Push Recovery: 20 N 〜 180 N）
-    実験3: 上位制御周波数の低減に対する歩行ロバスト性試験（125 Hz 〜 20.8 Hz）
-    実験4: 最適化された仮想モーメントアーム行列 R の構造・解剖学的解析
+    実験2: 横方向撃力インパルス外乱耐性試験（Push Recovery: 20 N 〜 180 N、初期姿勢・歩行位相ランダム化20試行）
+    実験3: 上位制御周波数の低減に対する歩行ロバスト性試験（125 Hz 〜 20.8 Hz、初期姿勢ランダム化20試行）
+    実験4: 最適化された仮想モーメントアーム行列 R の解剖学的構造・スパース性解析
 """
 
 import os
@@ -47,7 +47,7 @@ def run_experiment_1_learning(num_iterations: int = 40, pop_size: int = 16, num_
 
     # 1. 提案手法（Proposed-VM）の学習
     print("\n--- Training Proposed-VM (Virtual Musculoskeletal Layer) ---")
-    es_prop = ParallelEvolutionStrategy(model_type="proposed", pop_size=pop_size, sigma=0.04, lr=0.04, lambda_l1=0.005, num_workers=num_workers)
+    es_prop = ParallelEvolutionStrategy(model_type="proposed", pop_size=pop_size, sigma=0.04, lr=0.04, lambda_l1=0.08, num_workers=num_workers)
     model_prop, hist_prop = es_prop.train(num_iterations=num_iterations, max_steps=300, eval_freq=5)
     results["proposed"] = {
         "history": hist_prop,
@@ -55,6 +55,8 @@ def run_experiment_1_learning(num_iterations: int = 40, pop_size: int = 16, num_
         "final_mean_reward": float(hist_prop["mean_reward"][-1]),
         "final_best_reward": float(hist_prop["best_reward"][-1]),
         "final_vx": float(hist_prop["avg_vx"][-1]),
+        "final_det_reward": float(hist_prop["det_reward"][-1]),
+        "final_det_vx": float(hist_prop["det_vx"][-1]),
         "total_steps": int(hist_prop["total_steps"][-1])
     }
 
@@ -68,6 +70,8 @@ def run_experiment_1_learning(num_iterations: int = 40, pop_size: int = 16, num_
         "final_mean_reward": float(hist_min["mean_reward"][-1]),
         "final_best_reward": float(hist_min["best_reward"][-1]),
         "final_vx": float(hist_min["avg_vx"][-1]),
+        "final_det_reward": float(hist_min["det_reward"][-1]),
+        "final_det_vx": float(hist_min["det_vx"][-1]),
         "total_steps": int(hist_min["total_steps"][-1])
     }
 
@@ -81,24 +85,27 @@ def run_experiment_1_learning(num_iterations: int = 40, pop_size: int = 16, num_
         "final_mean_reward": float(hist_mlp["mean_reward"][-1]),
         "final_best_reward": float(hist_mlp["best_reward"][-1]),
         "final_vx": float(hist_mlp["avg_vx"][-1]),
+        "final_det_reward": float(hist_mlp["det_reward"][-1]),
+        "final_det_vx": float(hist_mlp["det_vx"][-1]),
         "total_steps": int(hist_mlp["total_steps"][-1])
     }
 
     return results, model_prop, model_mlp, model_min
 
 
-def run_experiment_2_push_recovery(model_prop: ProposedVM, model_mlp: BaselineMLP, model_min: MinimalPD, num_trials: int = 10) -> dict:
-    """実験2: 横方向インパルス撃力外乱に対する姿勢回復性能評価
+def run_experiment_2_push_recovery(model_prop: ProposedVM, model_mlp: BaselineMLP, model_min: MinimalPD, num_trials: int = 20) -> dict:
+    """実験2: 横方向インパルス撃力外乱に対する姿勢回復性能評価（位相・初期状態ランダム化統計評価）
 
-    歩行が定常状態に達したステップ80（開始から約0.64秒後）において、
-    ロボット胴体横方向（Y軸）に0.1秒間のパルス外力（20 N 〜 180 N）を印加し、
-    転倒せずに歩行を継続できる回復成功率（Success Rate）および限界撃力（Critical Force）を測定する。
+    各外力条件につき num_trials 回の独立試行を実施する。
+    統計的厳密性を担保するため、試行ごとに初期関節角度にランダム摂動（randomize=True）を付与し、
+    さらに外力印加タイミングを定常歩行1周期分（ステップ70〜148）から一様ランダムにサンプリングすることで、
+    遊脚期・接地瞬間・両脚支持期などあらゆる歩行位相における外乱回復成功率（Success Rate）を測定する。
 
     Args:
         model_prop (ProposedVM): 学習済み提案モデル。
         model_mlp (BaselineMLP): 学習済みBaseline-MLPモデル。
         model_min (MinimalPD): 学習済みMinimal-PDモデル。
-        num_trials (int): 各外力条件での試行回数（デフォルト: 10回）。
+        num_trials (int): 各外力条件での独立試行回数（デフォルト: 20回）。
 
     Returns:
         dict: 各加振力における3モデルの回復成功率および限界耐性力 [N] を格納した辞書。
@@ -114,13 +121,19 @@ def run_experiment_2_push_recovery(model_prop: ProposedVM, model_mlp: BaselineML
         success_count = 0
         env = QuadrupedEnv(max_steps=300)
         for trial in range(num_trials):
-            obs = env.reset(randomize=False)
+            np.random.seed(2000 + trial)
+            rng = np.random.default_rng(2000 + trial)
+            # 1歩容周期（約78制御ステップ）全域にわたって外乱印加タイミングを一様サンプリング
+            push_step = int(rng.integers(70, 148))
+            # 正負両方向（左・右）の横方向外乱を交互に試験
+            direction = 1.0 if (trial % 2 == 0) else -1.0
+
+            obs = env.reset(randomize=True)
             done = False
             pushed = False
             while not done:
-                # ステップ80で0.1秒間のインパルス外力を印加
-                if env.step_count == 80 and not pushed:
-                    env.apply_lateral_impulse(force_y, duration_sec=0.1)
+                if env.step_count == push_step and not pushed:
+                    env.apply_lateral_impulse(direction * force_y, duration_sec=0.1)
                     pushed = True
                 tau = model.compute_torque(obs)
                 obs, r, done, info = env.step(tau)
@@ -166,21 +179,21 @@ def run_experiment_2_push_recovery(model_prop: ProposedVM, model_mlp: BaselineML
     }
 
 
-def run_experiment_3_frequency_robustness(model_prop: ProposedVM, model_mlp: BaselineMLP, model_min: MinimalPD, num_trials: int = 10) -> dict:
+def run_experiment_3_frequency_robustness(model_prop: ProposedVM, model_mlp: BaselineMLP, model_min: MinimalPD, num_trials: int = 20) -> dict:
     """実験3: 上位制御周波数の低減に対する歩行ロバスト性評価
 
     上位制御器の計算更新周波数を標準の 125 Hz から 62.5 Hz, 31.25 Hz, 20.83 Hz まで
-    段階的に低下（間引き更新）させ、歩行継続成功率および平均前進速度を測定する。
-    下位の仮想筋骨格レイヤーが持つ高周波受動応答の寄与を検証する。
+    段階的に低下（間引き更新）させ、初期姿勢摂動（randomize=True）を伴う num_trials 回の試行における
+    歩行継続成功率およびエピソード全体の平均前進速度を測定する。
 
     Args:
         model_prop (ProposedVM): 学習済み提案モデル。
         model_mlp (BaselineMLP): 学習済みBaseline-MLPモデル。
         model_min (MinimalPD): 学習済みMinimal-PDモデル。
-        num_trials (int): 各周波数条件での試行回数（デフォルト: 10回）。
+        num_trials (int): 各周波数条件での独立試行回数（デフォルト: 20回）。
 
     Returns:
-        dict: 各更新周波数における3モデルの成功率および前進速度を格納した辞書。
+        dict: 各更新周波数における3モデルの成功率および平均前進速度を格納した辞書。
     """
     print("\n" + "=" * 60)
     print("EXPERIMENT 3: Control Frequency Robustness (125 Hz down to 20.8 Hz)")
@@ -196,9 +209,12 @@ def run_experiment_3_frequency_robustness(model_prop: ProposedVM, model_mlp: Bas
         env = QuadrupedEnv(max_steps=300)
 
         for trial in range(num_trials):
-            obs = env.reset(randomize=False)
+            np.random.seed(3000 + trial)
+            obs = env.reset(randomize=True)
             done = False
             last_cmd = None
+            ep_vx_sum = 0.0
+            ep_steps = 0
 
             while not done:
                 if model_type == "proposed":
@@ -227,10 +243,12 @@ def run_experiment_3_frequency_robustness(model_prop: ProposedVM, model_mlp: Bas
                     tau = model.Kp * (last_cmd - obs["q_joints"]) - model.Kd * obs["dq_joints"]
 
                 obs, r, done, info = env.step(tau)
+                ep_vx_sum += info["vx"]
+                ep_steps += 1
 
             if env.step_count >= 250 and info["height"] > 0.22:
                 success_count += 1
-                avg_vx_list.append(info["vx"])
+                avg_vx_list.append(ep_vx_sum / max(1, ep_steps))
 
         succ_rate = success_count / num_trials
         mean_vx = float(np.mean(avg_vx_list)) if avg_vx_list else 0.0
@@ -257,65 +275,86 @@ def run_experiment_3_frequency_robustness(model_prop: ProposedVM, model_mlp: Bas
 
 
 def run_experiment_4_matrix_analysis(model_prop: ProposedVM) -> dict:
-    """実験4: 最適化された仮想モーメントアーム行列 R の構造解析
+    """実験4: 最適化された仮想モーメントアーム行列 R の構造・解剖学的解析
 
-    学習後の行列 R（32筋 x 12関節）のスパース率（近ゼロ要素の割合）、
-    および各脚における単関節筋（結合関節数1）と二関節筋（股関節FEと膝関節FEの双方に結合を持つ筋）
-    の組織化比率を定量解析する。
+    学習後の行列 R（32筋 x 12関節 = 384要素）について以下を定量評価する:
+    1. 全体スパース率（384要素中の近ゼロ要素率）および同一脚内ブロック（96要素）内のスパース率。
+    2. 異なる脚間の非物理的交差結合数が厳密に 0（解剖学的ブロック対角制約 100% 遵守）であることの検証。
+    3. 全32本の仮想筋の完全分類（単関節筋、股関節-膝関節二関節筋、その他多関節筋、休止筋）。
 
     Args:
         model_prop (ProposedVM): 最適化後の提案モデル。
 
     Returns:
-        dict: スパース率、単関節筋数、二関節筋数などの構造統計辞書。
+        dict: スパース率、単関節筋数、二関節筋数、交差結合数などの構造統計辞書。
     """
     print("\n" + "=" * 60)
     print("EXPERIMENT 4: Structural Analysis of Learned Moment Arm Matrix R")
     print("=" * 60)
 
     R = model_prop.R.copy()  # 形状: (32, 12)
+    mask = model_prop.R_mask
     threshold = 0.05
 
     total_elements = R.size
-    zero_elements = np.sum(np.abs(R) < threshold)
+    zero_elements = int(np.sum(np.abs(R) < threshold))
     sparsity_ratio = zero_elements / total_elements
 
-    # 各脚における単関節筋および二関節筋の分類
+    # 解剖学的ブロック対角内（96要素）および他脚間（288要素）の解析
+    intra_limb_elements = 96
+    intra_active = int(np.sum((np.abs(R) >= threshold) & (mask == 1.0)))
+    intra_zero = intra_limb_elements - intra_active
+    intra_sparsity_ratio = intra_zero / intra_limb_elements
+    cross_limb_active = int(np.sum((np.abs(R) >= threshold) & (mask == 0.0)))
+
+    # 全32本の仮想筋の分類
     mono_articular_count = 0
     bi_articular_count = 0
-    other_count = 0
+    other_multi_count = 0
+    inactive_count = 0
 
     for leg in range(4):
         m_start = leg * 8
         j_start = leg * 3
         for m_idx in range(m_start, m_start + 8):
             leg_weights = np.abs(R[m_idx, j_start : j_start + 3])
-            active_joints = np.where(leg_weights > threshold)[0]
-            if len(active_joints) == 1:
+            active_joints = np.where(leg_weights >= threshold)[0]
+            if len(active_joints) == 0:
+                inactive_count += 1
+            elif len(active_joints) == 1:
                 mono_articular_count += 1
             elif len(active_joints) == 2 and (1 in active_joints and 2 in active_joints):
                 # 股関節FE（関節1）と膝関節FE（関節2）の双方に有意な重みを持つ二関節筋
                 bi_articular_count += 1
             else:
-                other_count += 1
+                other_multi_count += 1
 
     total_muscles = 32
     mono_ratio = mono_articular_count / total_muscles
     bi_ratio = bi_articular_count / total_muscles
 
     print(f"Total R Matrix Elements: {total_elements}")
-    print(f"Near-Zero Elements (< {threshold}): {zero_elements} ({sparsity_ratio*100:.1f}%)")
+    print(f"Near-Zero Elements (< {threshold}): {zero_elements}/{total_elements} ({sparsity_ratio*100:.1f}%)")
+    print(f"Intra-limb Sparsity (within 96 anatomical elements): {intra_zero}/{intra_limb_elements} ({intra_sparsity_ratio*100:.1f}%)")
+    print(f"Cross-limb Anatomical Violations: {cross_limb_active}/288")
     print(f"Mono-articular Muscles: {mono_articular_count}/{total_muscles} ({mono_ratio*100:.1f}%)")
     print(f"Bi-articular Muscles (Hip-Knee coupled): {bi_articular_count}/{total_muscles} ({bi_ratio*100:.1f}%)")
-    print(f"Other / Unclassified: {other_count}/{total_muscles}")
+    print(f"Other Multi-articular Muscles (Hip-AA coupled): {other_multi_count}/{total_muscles} ({other_multi_count/total_muscles*100:.1f}%)")
+    print(f"Pruned / Inactive Muscles: {inactive_count}/{total_muscles}")
 
     return {
         "R_matrix": R.tolist(),
         "total_elements": int(total_elements),
         "zero_elements": int(zero_elements),
         "sparsity_ratio": float(sparsity_ratio),
+        "intra_limb_elements": int(intra_limb_elements),
+        "intra_zero_elements": int(intra_zero),
+        "intra_sparsity_ratio": float(intra_sparsity_ratio),
+        "cross_limb_active": int(cross_limb_active),
         "mono_articular_count": int(mono_articular_count),
         "bi_articular_count": int(bi_articular_count),
+        "other_multi_count": int(other_multi_count),
+        "inactive_count": int(inactive_count),
         "mono_ratio": float(mono_ratio),
         "bi_ratio": float(bi_ratio)
     }
@@ -325,8 +364,8 @@ if __name__ == "__main__":
     t_start = time.time()
 
     exp1_res, m_prop, m_mlp, m_min = run_experiment_1_learning(num_iterations=40, pop_size=16, num_workers=4)
-    exp2_res = run_experiment_2_push_recovery(m_prop, m_mlp, m_min, num_trials=10)
-    exp3_res = run_experiment_3_frequency_robustness(m_prop, m_mlp, m_min, num_trials=10)
+    exp2_res = run_experiment_2_push_recovery(m_prop, m_mlp, m_min, num_trials=20)
+    exp3_res = run_experiment_3_frequency_robustness(m_prop, m_mlp, m_min, num_trials=20)
     exp4_res = run_experiment_4_matrix_analysis(m_prop)
 
     all_data = {

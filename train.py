@@ -1,8 +1,8 @@
 """並列進化戦略（Parallel Evolution Strategies）による共設計最適化モジュール
 
 本モジュールは、勾配計算を行わずにゼロ次最適化によって高次元パラメータ空間を探索する
-並列進化戦略（ES）エンジンを提供し、仮想筋骨格レイヤーの力学パラメータと
-上位極小神経回路の重みを進化強化学習によって同時に最適化する。
+並列進化戦略（ES）エンジンを提供し、解剖学的ブロック対角制約（R_mask）を満たす
+仮想筋骨格レイヤーの力学パラメータと上位極小神経回路の重みを同時に最適化する。
 """
 
 import os
@@ -22,7 +22,7 @@ def evaluate_candidate(args: tuple) -> tuple[float, float, float, int]:
         args (tuple): 以下の要素からなるタプル。
             - model_type (str): モデル識別子 ("proposed", "minimal_pd", "baseline_mlp")。
             - params (np.ndarray): 評価対象の平坦化パラメータベクトル。
-            - seed (int): 環境乱数シード。
+            - seed (int): 環境乱数シード（負値の場合は randomize=False の決定論的評価）。
             - max_steps (int): 評価エピソードの最大ステップ数。
             - lambda_l1 (float): モーメントアーム行列に対する L1 正則化係数。
 
@@ -30,27 +30,29 @@ def evaluate_candidate(args: tuple) -> tuple[float, float, float, int]:
         tuple[float, float, float, int]:
             - fitness (float): 正則化ペナルティを差し引いた適応度（最適化指標）。
             - total_reward (float): 環境から得られた純粋な累積報酬。
-            - avg_vx (float): エピソード内の平均前進速度 [m/s]。
+            - avg_vx (float): エピソード内の胴体座標系平均前進速度 [m/s]。
             - steps (int): 転倒せずに生存した制御ステップ数。
     """
     model_type, params, seed, max_steps, lambda_l1 = args
     env = QuadrupedEnv(max_steps=max_steps)
-    np.random.seed(seed)
+    randomize = (seed >= 0)
+    if randomize:
+        np.random.seed(seed)
 
     # モデルインスタンスの生成とパラメータ展開
     if model_type == "proposed":
-        model = ProposedVM(seed=seed)
+        model = ProposedVM(seed=max(0, seed))
     elif model_type == "minimal_pd":
-        model = MinimalPD(seed=seed)
+        model = MinimalPD(seed=max(0, seed))
     elif model_type == "baseline_mlp":
-        model = BaselineMLP(seed=seed)
+        model = BaselineMLP(seed=max(0, seed))
     else:
         raise ValueError(f"Unknown model type: {model_type}")
 
     model.set_params(params)
 
     # ロールアウトシミュレーションの実行
-    obs = env.reset(randomize=True)
+    obs = env.reset(randomize=randomize)
     total_reward = 0.0
     total_vx = 0.0
     steps = 0
@@ -80,11 +82,13 @@ class ParallelEvolutionStrategy:
     数理原理:
         パラメータ平均ベクトル theta に対し、母集団 P 組の対称標準正規摂動
         theta + sigma * epsilon_i および theta - sigma * epsilon_i を生成する。
-        各個体の適応度評価値 J(+), J(-) の差分から、パラメータ勾配の不偏推定量
-        grad = sum( (J(+) - J(-)) * epsilon_i ) / (2 * P * sigma)
-        を計算し、確率的勾配上昇法によって theta を更新する。
-        さらに、モーメントアーム行列 R に対してソフト閾値収縮（Soft-Thresholding）
-        を適用し、解剖学的に意味のある疎な結合構造を形成する。
+        各個体の適応度評価値 J(+), J(-) の差分 delta_J = J(+) - J(-) を標準化した
+        正規化差分ベクトル norm_diff = (delta_J - mean(delta_J)) / std(delta_J) を用いることで、
+        報酬スケールの変動に不変な自然勾配方向
+        grad = sum( norm_diff_i * epsilon_i ) / (2 * P)
+        を算出し、学習率 lr に基づいて theta を更新する。
+        さらに、モーメントアーム行列 R に対して解剖学的ブロック対角マスク R_mask と
+        ソフト閾値収縮（Soft-Thresholding）を適用し、同一脚内の疎な筋骨格配線を形成する。
 
     Attributes:
         model_type (str): 対象モデルの種類。
@@ -138,24 +142,34 @@ class ParallelEvolutionStrategy:
         Returns:
             tuple[object, dict]:
                 - base_model: 最適化後のパラメータがロードされたモデルインスタンス。
-                - history: イテレーションごとの総ステップ数、平均報酬、最高報酬、平均前進速度の履歴辞書。
+                - history: イテレーションごとの総ステップ数、平均報酬、最高報酬、平均前進速度、
+                           および決定論的中心方策評価値の履歴辞書。
         """
         history = {
             "iteration": [],
             "total_steps": [],
             "mean_reward": [],
             "best_reward": [],
-            "avg_vx": []
+            "avg_vx": [],
+            "det_reward": [],
+            "det_vx": []
         }
 
         cumulative_steps = 0
         pool = mp.Pool(processes=self.num_workers)
+        np.random.seed(42)
 
         try:
             for it in range(1, num_iterations + 1):
                 t0 = time.time()
                 # 対称摂動ノイズの生成: epsilon_i ~ N(0, I)
                 epsilons = np.random.randn(self.pop_size, self.dim)
+
+                # 提案手法の場合、モーメントアーム行列の非ブロック対角要素への摂動をゼロにマスク
+                if self.model_type == "proposed":
+                    n_R = self.base_model.m * self.base_model.n
+                    mask_flat = self.base_model.R_mask.flatten()
+                    epsilons[:, :n_R] *= mask_flat
 
                 tasks = []
                 base_seed = it * 1000
@@ -178,7 +192,7 @@ class ParallelEvolutionStrategy:
                 steps_all = sum(r[3] for r in results)
                 cumulative_steps += steps_all
 
-                # 対称差分による適応度勾配推定量の算出
+                # 対称差分による正規化自然勾配推定量の算出
                 fit_diff = fit_pos - fit_neg
                 std_diff = np.std(fit_diff)
                 if std_diff > 1e-6:
@@ -190,12 +204,19 @@ class ParallelEvolutionStrategy:
                 grad = np.dot(epsilons.T, norm_diff) / (2.0 * self.pop_size)
                 self.theta += self.lr * grad
 
-                # 提案手法に対するソフト閾値収縮（Soft-Thresholding Shrinkage）による L1 スパース化
-                if self.model_type == "proposed" and self.lambda_l1 > 0:
+                # 提案手法に対するソフト閾値収縮（Soft-Thresholding）および解剖学的ブロック対角マスクの適用
+                if self.model_type == "proposed":
                     n_R = self.base_model.m * self.base_model.n
                     R_vec = self.theta[:n_R]
-                    shrinkage = self.lr * self.lambda_l1 * 0.05
-                    self.theta[:n_R] = np.sign(R_vec) * np.maximum(0.0, np.abs(R_vec) - shrinkage)
+                    if self.lambda_l1 > 0:
+                        shrinkage = self.lr * self.lambda_l1
+                        R_vec = np.sign(R_vec) * np.maximum(0.0, np.abs(R_vec) - shrinkage)
+                    self.theta[:n_R] = R_vec * self.base_model.R_mask.flatten()
+
+                # ノイズを除去した中心パラメータ self.theta の決定論的評価（seed = -1）
+                _, det_rew, det_vx, _ = evaluate_candidate(
+                    (self.model_type, self.theta, -1, max_steps, self.lambda_l1)
+                )
 
                 dt = time.time() - t0
 
@@ -208,11 +229,13 @@ class ParallelEvolutionStrategy:
                 history["mean_reward"].append(float(mean_rew))
                 history["best_reward"].append(float(best_rew))
                 history["avg_vx"].append(float(mean_vx))
+                history["det_reward"].append(float(det_rew))
+                history["det_vx"].append(float(det_vx))
 
                 if verbose and (it % eval_freq == 0 or it == 1 or it == num_iterations):
                     print(f"[{self.model_type}] Iter {it:3d}/{num_iterations} | "
                           f"Steps: {cumulative_steps:8d} | Best Rew: {best_rew:7.1f} | "
-                          f"Mean Rew: {mean_rew:7.1f} | Avg vx: {mean_vx:5.2f} m/s | Time: {dt:4.1f}s")
+                          f"Mean Rew: {mean_rew:7.1f} | Pop vx: {mean_vx:5.2f} (Det vx: {det_vx:5.2f}) m/s | Time: {dt:4.1f}s")
         finally:
             pool.close()
             pool.join()

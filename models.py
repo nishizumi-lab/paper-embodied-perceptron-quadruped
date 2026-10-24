@@ -1,72 +1,115 @@
-"""身体化パーセプトロン表現に基づく四脚歩行制御モデルモジュール
+"""身体化パーセプトロン（仮想筋骨格レイヤー）および比較ベースライン制御器モジュール
 
-本モジュールは、腱駆動筋骨格系の静力学モデルと3層パーセプトロンの数理的等価性に基づき、
-電動四脚ロボットのアクチュエータ空間に仮想多関節腱ネットワークを構築する
-「仮想筋骨格レイヤー（ProposedVM）」、および比較検証用の「関節独立PD制御（MinimalPD）」、
-「多層パーセプトロンベースライン（BaselineMLP）」を定義する。
+本モジュールは、四脚歩行ロボット（Unitree Go2相当、12自由度）の歩行制御器として以下の3つのモデルを定義する。
+1. ProposedVM: 身体化パーセプトロン表現に基づく仮想筋骨格インピーダンス制御レイヤー＋極小神経制御器（提案手法）。
+2. MinimalPD: 提案手法と同一の上位極小神経制御器＋関節独立線形PD制御器（アブレーション検証用）。
+3. BaselineMLP: 3層多層パーセプトロン（MLP）＋関節独立線形PD制御器（従来手法ベースライン）。
+
+数理的プレミス（前提条件）:
+    - 物理的な筋腱複合体は引張力のみを発生・伝達し、圧縮方向にはたるみ（Slack）を生じて力を伝達しない。
+      したがって、各仮想筋の張力 f_i は常に非負（f_i >= 0）でなければならない。
+    - 解剖学的妥当性を保証するため、モーメントアーム行列 R (32 x 12) には各脚の8本の筋が当該脚の3関節のみを
+      駆動するブロック対角構造制約（R_mask）を課し、異なる脚間を跨ぐ非物理的な交差結合を排除する。
+    - 関節角度ベクトル q (12次元) から筋伸長変位 l (32次元) への幾何学的写像が l(q) = R q + b で与えられるとき、
+      仮想仕事の原理（Principle of Virtual Work）により、筋張力 f が関節系に及ぼす一般化トルク tau は
+      モーメントアーム行列 R の負転置を用いて tau = - R^T f と一意に定まる。
 """
 
 import numpy as np
 
 
 def sigmoid(x: np.ndarray) -> np.ndarray:
-    """シグモイド活性化関数
+    """数値安定性を考慮したシグモイド活性化関数
 
-    ロジット入力を [0, 1] の確率的・有界な値域へ変換する。
-    数値的オーバーフローを防止するため、入力を [-15.0, 15.0] にクリップする。
+    数式:
+        sigma(x) = 1 / (1 + exp(-x))
+
+    前提条件:
+        指数関数のオーバーフローを防止するため、入力 x を [-15.0, 15.0] の範囲にクリップする。
+        上位神経回路からのロジット入力を [0, 1] の正規化筋活動度へ変換するために用いる。
 
     Args:
-        x (np.ndarray): 入力配列。
+        x (np.ndarray): 任意形状の実数入力配列（神経回路のロジット出力）。
 
     Returns:
-        np.ndarray: シグモイド関数の出力配列。
+        np.ndarray: (0, 1) の範囲に正規化された出力配列。
     """
     return 1.0 / (1.0 + np.exp(-np.clip(x, -15.0, 15.0)))
 
 
 def relu(x: np.ndarray) -> np.ndarray:
-    """正規化線形関数（ReLU）
+    """腱のたるみ（Slack）非線形性を表現する正規化線形関数（ReLU）
 
-    腱・ワイヤーの片側拘束（引張力のみを伝達し、圧縮時にはたるむSlack特性）を表現する。
+    数式:
+        phi(x) = max(0, x)
+
+    前提条件:
+        筋や腱は引張方向（x > 0）にのみ張力を発生し、圧縮方向（x <= 0）では座屈・たるみを生じて
+        発生張力が厳密にゼロとなる物理的片側拘束（Unilateral constraint）をモデル化する。
 
     Args:
-        x (np.ndarray): 入力プレ張力配列。
+        x (np.ndarray): 各仮想筋の内部プレ張力配列。
 
     Returns:
-        np.ndarray: 非負にクリップされた張力配列（max(0, x)）。
+        np.ndarray: 非負制約（>= 0）が適用された実効筋張力配列。
     """
     return np.maximum(0.0, x)
 
 
 class ProposedVM:
-    """身体化パーセプトロン仮想筋骨格レイヤーおよび極小神経制御器
+    """提案手法: 仮想筋骨格レイヤー（身体化パーセプトロン）＋極小神経制御器
 
-    仮想仕事の原理および身体化パーセプトロン表現に基づく仮想インピーダンス制御モデル。
-    各仮想筋の発生張力を常に非負（引張力のみ）とし、関節トルクをモーメントアーム行列の負転置で写像する。
+    32本の仮想筋（1脚あたり8本 × 4脚）と12個の関節（1脚あたり3関節 × 4脚）からなる二層構造の制御器。
+    下位の仮想筋骨格レイヤーは3層パーセプトロンと数理的に等価なインピーダンス変換を行い、
+    上位の極小神経制御器は位相信号と姿勢フィードバックから能動収縮指令を生成する。
 
-    数理定式化:
-        1. 幾何学的筋伸長変位: Delta_l = R @ q + b
-        2. 幾何学的筋伸長速度: Delta_dot_l = R @ dq
-        3. 上位神経能動収縮力: f_active = F_max * sigmoid(W_neural @ x_osc + W_fb @ s_imu)
-        4. 非負仮想筋張力: f = relu(K * Delta_l + D * Delta_dot_l + f_active)
-        5. 関節出力トルク: tau = - R.T @ f
+    組み込まれている数理モデルと計算式:
+        1. 上位神経制御器による能動収縮力（Active Contraction Force）の生成:
+           f_active = F_max * sigma(W_neural @ x_osc + W_fb @ s_imu)
+           ここで F_max = 24.0 [N] は最大能動収縮力、x_osc (4次元) はトロット位相基底、
+           s_imu (6次元) は胴体姿勢および順運動学推定高さフィードバック。
+
+        2. 仮想筋の伸長量（Strain）および伸長速度（Strain Rate）の幾何学的写像:
+           strain = R @ q + b
+           strain_rate = R @ dq
+           ここで R (32 x 12) はブロック対角マスク R_mask により各脚内部に拘束されたモーメントアーム行列、
+           b (32次元) は初期プリテンション変位。
+
+        3. 腱のたるみ（ReLU）と粘弾性・ヒル型短縮アンローディング特性を含む非負筋張力の算出:
+           f = max(0, K * (R @ q + b) + D * (R @ dq) + f_active)
+           ここで K = exp(p_K) > 0 は仮想剛性、D = exp(p_D) > 0 は仮想粘性減衰係数。
+           急速短縮時（R @ dq < 0）には粘性項が負となり張力を減衰させ、圧縮力への転化をReLUで遮断する。
+
+        4. 仮想仕事の原理に基づく関節トルクへの変換:
+           tau = - R^T @ f
+
+    解剖学的筋配置（1脚あたり8本、j_s = 脚インデックス * 3）:
+        - 筋0: 股関節外転筋（Hip Abductor, 関節0）
+        - 筋1: 股関節内転筋（Hip Adductor, 関節0）
+        - 筋2: 股関節屈筋（Hip Flexor, 関節1）
+        - 筋3: 股関節伸筋（Hip Extensor, 関節1）
+        - 筋4: 膝関節屈筋（Knee Flexor, 関節2）
+        - 筋5: 膝関節伸筋（Knee Extensor, 関節2）
+        - 筋6: 大腿直筋様二関節筋（Rectus Femoris-like, 股関節屈曲＋膝関節伸展）
+        - 筋7: ハムストリングス様二関節筋（Hamstrings-like, 股関節伸展＋膝関節屈曲）
 
     Attributes:
-        m (int): 仮想筋の総本数（32本、1脚あたり8本）。
-        n (int): 関節自由度の総数（12自由度、1脚あたり3関節）。
+        m (int): 仮想筋の総数（32本）。
+        n (int): ロボットの駆動関節自由度数（12自由度）。
+        R_mask (np.ndarray): 各脚内の筋・関節結合のみを許容する解剖学的ブロック対角マスク（32 x 12）。
         R (np.ndarray): 仮想モーメントアーム行列（形状: 32 x 12）。
-        b (np.ndarray): 初期変位（プリテンション）ベクトル（形状: 32）。
-        p_K (np.ndarray): 対数剛性パラメータベクトル（形状: 32、K = exp(p_K)）。
-        p_D (np.ndarray): 対数減衰パラメータベクトル（形状: 32、D = exp(p_D)）。
-        W_neural (np.ndarray): 位相振動子信号に対する結合重み行列（形状: 32 x 4）。
-        W_fb (np.ndarray): 胴体姿勢フィードバックに対する結合重み行列（形状: 32 x 6）。
-        F_max (float): 各仮想筋の最大能動収縮力 [N]（本実装では 24.0 N）。
+        b (np.ndarray): 仮想筋の初期伸長バイアスベクトル（形状: 32）。
+        p_K (np.ndarray): 仮想剛性の対数パラメータベクトル（形状: 32）。
+        p_D (np.ndarray): 仮想減衰の対数パラメータベクトル（形状: 32）。
+        W_neural (np.ndarray): 位相振動子入力に対する上位神経重み行列（形状: 32 x 4）。
+        W_fb (np.ndarray): IMU姿勢入力に対するフィードバック重み行列（形状: 32 x 6）。
+        F_max (float): 各仮想筋の最大能動収縮力 [N]。
     """
 
     def __init__(self, seed: int = 42):
-        """モデルパラメータの初期化
+        """ProposedVM の初期化と解剖学的初期パラメータの設定
 
-        各脚8本の仮想筋（単関節筋6本、二関節筋2本）の解剖学的モーメントアーム符号、
+        各脚の単関節筋および二関節筋のモーメントアーム符号、ブロック対角マスク R_mask、
         相反神経支配（Reciprocal Inhibition）を考慮した初期トロット歩容結合、
         および対数剛性・減衰パラメータを設定する。
 
@@ -76,11 +119,16 @@ class ProposedVM:
         self.m = 32  # 仮想筋数: 1脚あたり8本 x 4脚 = 32本
         self.n = 12  # 関節数: 1脚あたり3関節 x 4脚 = 12関節
 
+        # 解剖学的ブロック対角マスク R_mask の構築（異なる脚間の非物理的結合を厳密に遮断）
+        self.R_mask = np.zeros((self.m, self.n), dtype=np.float64)
+        for leg in range(4):
+            self.R_mask[leg * 8 : (leg + 1) * 8, leg * 3 : (leg + 1) * 3] = 1.0
+
         # 1. 仮想モーメントアーム行列 R の初期化（32 x 12）
         # トルク変換式 tau = - R.T @ f （f >= 0）に基づく符号規約:
         # 正トルク（tau > 0）を発生させたい場合: -R.T > 0 より R = -1.0
         # 負トルク（tau < 0）を発生させたい場合: -R.T < 0 より R = +1.0
-        R_init = np.zeros((self.m, self.n))
+        R_init = np.zeros((self.m, self.n), dtype=np.float64)
         for leg in range(4):
             m_s = leg * 8  # 当該脚の筋インデックス開始位置
             j_s = leg * 3  # 当該脚の関節インデックス開始位置
@@ -107,12 +155,12 @@ class ProposedVM:
         self.R = R_init.copy()
 
         # 2. 初期変位（プリテンション）ベクトル b (32次元)
-        self.b = np.zeros(self.m)
+        self.b = np.zeros(self.m, dtype=np.float64)
 
         # 3. 対数剛性 p_K および対数減衰 p_D (各32次元)
         # 正定値性を保証するため対数領域で最適化（K ~ 28.0 N/rad, D ~ 1.8 Ns/rad）
-        self.p_K = np.full(self.m, np.log(28.0))
-        self.p_D = np.full(self.m, np.log(1.8))
+        self.p_K = np.full(self.m, np.log(28.0), dtype=np.float64)
+        self.p_D = np.full(self.m, np.log(1.8), dtype=np.float64)
 
         # 4. 上位神経制御器の結合重み
         np.random.seed(seed)
@@ -174,23 +222,25 @@ class ProposedVM:
             np.ndarray: 平坦化されたパラメータベクトル（次元: 800）。
         """
         return np.concatenate([
-            self.R.flatten(),           # 32 x 12 = 384
-            self.b,                     # 32
-            self.p_K,                   # 32
-            self.p_D,                   # 32
-            self.W_neural.flatten(),    # 32 x 4 = 128
-            self.W_fb.flatten()         # 32 x 6 = 192
+            (self.R * self.R_mask).flatten(),  # 32 x 12 = 384（ブロック対角マスク適用済）
+            self.b,                            # 32
+            self.p_K,                          # 32
+            self.p_D,                          # 32
+            self.W_neural.flatten(),           # 32 x 4 = 128
+            self.W_fb.flatten()                # 32 x 6 = 192
         ])
 
     def set_params(self, params: np.ndarray) -> None:
         """平坦化パラメータベクトルから各内部行列・ベクトルを復元
+
+        解剖学的ブロック対角マスク R_mask を乗算し、異なる脚間の交差結合を厳密にゼロに保つ。
 
         Args:
             params (np.ndarray): 800次元のパラメータベクトル。
         """
         idx = 0
         n_R = self.m * self.n
-        self.R = params[idx : idx + n_R].reshape((self.m, self.n))
+        self.R = params[idx : idx + n_R].reshape((self.m, self.n)) * self.R_mask
         idx += n_R
 
         self.b = params[idx : idx + self.m]
@@ -221,7 +271,7 @@ class ProposedVM:
         Args:
             obs (dict): 環境からの観測辞書。
                 - "x_osc": 4次元の直交位相信号 [sin psi, cos psi, sin(psi+pi), cos(psi+pi)]。
-                - "s_imu": 6次元の姿勢信号 [roll, pitch, wx, wy, wz, delta_z]。
+                - "s_imu": 6次元の姿勢・固有受容信号 [roll, pitch, wx, wy, wz, z_kin - 0.30]。
                 - "q_joints": 12次元の公称姿勢からの関節変位 [rad]。
                 - "dq_joints": 12次元の関節角速度 [rad/s]。
 
@@ -245,7 +295,7 @@ class ProposedVM:
         muscle_strain = self.R @ q + self.b
         muscle_strain_rate = self.R @ dq
 
-        # 4. 厳密な非負筋張力の算出（ReLU によるたるみ表現）
+        # 4. 厳密な非負筋張力の算出（ReLU によるたるみ・短縮アンローディング表現）
         total_muscle_tension = relu(K * muscle_strain + D * muscle_strain_rate + f_active)
 
         # 5. 仮想仕事の原理に基づく関節トルクへの変換
@@ -257,7 +307,7 @@ class MinimalPD:
     """アブレーション検証モデル: 極小神経制御器＋関節独立線形PD制御
 
     提案手法と同じ上位極小神経回路（位相振動子入力）を用いながら、
-    下位アクチュエータ層として多関節腱結合を持たない関節独立型線形PD制御器（R = I 固定）を使用する。
+    下位アクチュエータ層として多関節腱結合を持たない関節独立型線形PD制御器を使用する。
     提案手法との公平な比較のため、同一の初期トロット対角歩容バイアスを持つ。
 
     数理定式化:
